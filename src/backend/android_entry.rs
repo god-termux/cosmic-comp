@@ -19,6 +19,29 @@ use std::{
     sync::Mutex,
 };
 
+unsafe extern "C" {
+    fn open(path: *const std::ffi::c_char, flags: i32, ...) -> i32;
+    fn dup2(old: i32, new: i32) -> i32;
+    fn close(fd: i32) -> i32;
+}
+
+/// stdout/stderr приложения Android ведут в никуда, а логгер cosmic-comp пишет в stdout:
+/// направляем оба потока в файл XDG_RUNTIME_DIR/cosmic-comp.log
+fn redirect_output() {
+    let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else { return };
+    let path = std::path::Path::new(&dir).join("cosmic-comp.log");
+    let Ok(c) = CString::new(path.to_string_lossy().as_bytes()) else { return };
+    // O_WRONLY | O_CREAT | O_TRUNC (bionic: 1 | 0x40 | 0x200)
+    let fd = unsafe { open(c.as_ptr(), 1 | 0x40 | 0x200, 0o600u32) };
+    if fd >= 0 {
+        unsafe {
+            dup2(fd, 1);
+            dup2(fd, 2);
+            close(fd);
+        }
+    }
+}
+
 #[link(name = "log")]
 unsafe extern "C" {
     fn __android_log_write(prio: i32, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> i32;
@@ -125,6 +148,7 @@ pub extern "C" fn cosmic_start(window: *mut c_void, refresh_mhz: u32) -> i32 {
             }
         }
     }
+    redirect_output();
     super::android_gl::set_window(window, refresh_mhz);
     std::panic::set_hook(Box::new(|info| alog(&format!("panic: {info}"))));
     // Wayland-сокет композитора и конфиги берутся из окружения процесса приложения (XDG_RUNTIME_DIR и т.д.)
