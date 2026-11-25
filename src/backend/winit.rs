@@ -145,6 +145,17 @@ impl WinitState {
     }
 }
 
+/// Реальная частота экрана (мГц) родительского композитора; 60 Гц, если узнать не удалось.
+fn display_refresh_mhz(window: &dyn smithay::reexports::winit::window::Window) -> u32 {
+    window
+        .current_monitor()
+        .and_then(|m| m.current_video_mode())
+        .and_then(|v| v.refresh_rate_millihertz())
+        .map(|n| n.get())
+        .unwrap_or(60_000)
+        .clamp(24_000, 360_000)
+}
+
 pub fn init_backend(
     dh: &DisplayHandle,
     event_loop: &mut EventLoop<State>,
@@ -167,7 +178,7 @@ pub fn init_backend(
     };
     let mode = Mode {
         size: (size.w, size.h).into(),
-        refresh: 60_000,
+        refresh: display_refresh_mhz(backend.window()) as i32,
     };
     let output = Output::new(name, props);
     output.add_mode(mode);
@@ -214,12 +225,14 @@ pub fn init_backend(
             {
                 PumpStatus::Continue => {
                     // Без vsync (вложенный запуск в god-termux) прямой ping даёт цикл без пауз:
-                    // рендер и swap гоняются на всю мощность. Ограничиваем частоту ~60 к/с.
+                    // рендер и swap гоняются на всю мощность. Ограничиваем частотой экрана телефона.
                     if !tick_pending.swap(true, Ordering::AcqRel) {
                         let flag = tick_pending.clone();
                         let (ev, rn) = (event_ping_handle.clone(), render_ping_handle.clone());
                         let _ = event_loop_handle.insert_source(
-                            Timer::from_duration(Duration::from_millis(16)),
+                            Timer::from_duration(Duration::from_micros(
+                                1_000_000_000 / display_refresh_mhz(state.backend.winit().backend.window()) as u64,
+                            )),
                             move |_, _, _| {
                                 flag.store(false, Ordering::Release);
                                 ev.ping();
