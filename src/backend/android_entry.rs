@@ -155,8 +155,13 @@ pub extern "C" fn cosmic_start(window: *mut c_void, refresh_mhz: u32) -> i32 {
     // паника через границу extern "C" убила бы приложение
     let res = std::panic::catch_unwind(|| crate::run(Default::default()));
     match res {
-        Err(_) => {
-            alog("cosmic_start: паника, см. выше");
+        Err(payload) => {
+            let why = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "неизвестная причина".into());
+            alog(&format!("cosmic_start: паника: {why}"));
             3
         }
         Ok(Ok(())) => 0,

@@ -53,6 +53,15 @@ pub fn init_logger() -> Result<()> {
         .with(filter)
         .init();
     log_panics::init();
+    // Android: stdout приложения никуда не ведёт, поэтому дублируем панику в logcat (поверх хука log_panics)
+    #[cfg(target_os = "android")]
+    {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            crate::backend::android_entry::alog(&format!("panic: {info}"));
+            prev(info);
+        }));
+    }
 
     info!("Version: {}", std::env!("CARGO_PKG_VERSION"));
     if cfg!(feature = "debug") {
