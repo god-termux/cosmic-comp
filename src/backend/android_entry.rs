@@ -62,6 +62,7 @@ pub enum RawInput {
     Scroll { dy: f64 },
     Touch { kind: u32, id: u64, x: f64, y: f64 },
     Key { code: u32, pressed: bool },
+    DeviceAdded,
     Quit,
 }
 
@@ -69,6 +70,10 @@ static SENDER: Mutex<Option<Sender<RawInput>>> = Mutex::new(None);
 
 pub fn register_sender(sender: Sender<RawInput>) {
     *SENDER.lock().unwrap() = Some(sender);
+}
+
+pub fn send_raw(ev: RawInput) {
+    send(ev)
 }
 
 fn send(ev: RawInput) {
@@ -120,6 +125,7 @@ pub fn to_input_event(raw: RawInput, size: (i32, i32)) -> Option<InputEvent<Andr
         RawInput::Key { code, pressed } => InputEvent::Keyboard {
             event: AndroidKeyboardInputEvent { time, key: code, count: 1, state: state_of(pressed) },
         },
+        RawInput::DeviceAdded => device_added(),
         RawInput::Quit => return None,
     })
 }

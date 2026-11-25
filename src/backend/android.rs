@@ -254,7 +254,8 @@ pub fn init_backend(
         state.common.refresh();
     }
 
-    state.process_input_event(super::android_entry::device_added(), crate::input::InputBackendId::Normal);
+    // устройство ввода появится уже после создания Seat (как у winit — событием из цикла)
+    super::android_entry::send_raw(super::android_entry::RawInput::DeviceAdded);
 
     if state.common.with_xwayland {
         state.launch_xwayland(None);
