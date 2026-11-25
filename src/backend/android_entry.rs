@@ -14,7 +14,22 @@ use smithay::{
     backend::input::{InputEvent, InputTime},
     reexports::calloop::channel::Sender,
 };
-use std::{ffi::c_void, sync::Mutex};
+use std::{
+    ffi::{CString, c_void},
+    sync::Mutex,
+};
+
+#[link(name = "log")]
+unsafe extern "C" {
+    fn __android_log_write(prio: i32, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> i32;
+}
+
+/// Сообщение в logcat (тег cosmic-comp); stderr приложения никуда не идёт.
+pub fn alog(msg: &str) {
+    if let (Ok(t), Ok(m)) = (CString::new("cosmic-comp"), CString::new(msg.replace('\0', ""))) {
+        unsafe { __android_log_write(6, t.as_ptr(), m.as_ptr()) };
+    }
+}
 
 /// Сырое событие ввода от приложения (координаты в пикселях окна).
 #[derive(Debug, Clone, Copy)]
@@ -94,11 +109,35 @@ pub fn device_added() -> InputEvent<AndroidInput> {
 /// Блокируется до остановки; возвращает 0 при штатном выходе.
 #[unsafe(no_mangle)]
 pub extern "C" fn cosmic_start(window: *mut c_void, refresh_mhz: u32) -> i32 {
+    // run() не рассчитан на повторный вызов в одном процессе (глобальный логгер, HOOKS): повторный
+    // запуск вызвал бы панику и abort() всего приложения, поэтому отказываем заранее
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        alog("cosmic_start: композитор уже запускался в этом процессе, перезапустите приложение");
+        return 2;
+    }
+    // уровень логов без пересборки: содержимое ~/.termux/cosmic-rust-log (например "smithay=debug,cosmic_comp=info")
+    if let Some(home) = std::env::var_os("HOME") {
+        if let Ok(level) = std::fs::read_to_string(std::path::Path::new(&home).join(".termux/cosmic-rust-log")) {
+            let level = level.trim();
+            if !level.is_empty() {
+                unsafe { std::env::set_var("RUST_LOG", level) };
+            }
+        }
+    }
     super::android_gl::set_window(window, refresh_mhz);
+    std::panic::set_hook(Box::new(|info| alog(&format!("panic: {info}"))));
     // Wayland-сокет композитора и конфиги берутся из окружения процесса приложения (XDG_RUNTIME_DIR и т.д.)
-    match crate::run(Default::default()) {
-        Ok(()) => 0,
-        Err(err) => {
+    // паника через границу extern "C" убила бы приложение
+    let res = std::panic::catch_unwind(|| crate::run(Default::default()));
+    match res {
+        Err(_) => {
+            alog("cosmic_start: паника, см. выше");
+            3
+        }
+        Ok(Ok(())) => 0,
+        Ok(Err(err)) => {
+            alog(&format!("cosmic_start: ошибка: {err:?}"));
             tracing::error!("cosmic_start: {err}");
             1
         }

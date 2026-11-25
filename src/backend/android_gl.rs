@@ -87,6 +87,31 @@ unsafe impl EGLNativeSurface for AndroidSurface {
     }
 }
 
+/// eglGetDisplay(EGL_DEFAULT_DISPLAY) + eglInitialize + первая подходящая конфигурация окна GLES.
+unsafe fn default_display() -> Result<EGLDisplay, String> {
+    ffi::make_sure_egl_is_loaded().map_err(|e| format!("загрузка EGL: {e:?}"))?;
+    let dpy = unsafe { ffi::egl::GetDisplay(std::ptr::null()) };
+    if dpy.is_null() {
+        return Err("eglGetDisplay вернул NO_DISPLAY".into());
+    }
+    let (mut major, mut minor) = (0, 0);
+    if unsafe { ffi::egl::Initialize(dpy, &mut major, &mut minor) } == 0 {
+        return Err("eglInitialize не удался".into());
+    }
+    unsafe { ffi::egl::BindAPI(ffi::egl::OPENGL_ES_API) };
+    let attrs = [
+        ffi::egl::SURFACE_TYPE as i32, ffi::egl::WINDOW_BIT as i32,
+        ffi::egl::RENDERABLE_TYPE as i32, ffi::egl::OPENGL_ES2_BIT as i32,
+        ffi::egl::NONE as i32,
+    ];
+    let mut cfg: ffi::egl::types::EGLConfig = std::ptr::null();
+    let mut n = 0;
+    if unsafe { ffi::egl::ChooseConfig(dpy, attrs.as_ptr(), &mut cfg, 1, &mut n) } == 0 || n < 1 || cfg.is_null() {
+        return Err("нет EGL-конфигурации для окна".into());
+    }
+    unsafe { EGLDisplay::from_raw(dpy, cfg) }.map_err(|e| format!("EGLDisplay::from_raw: {e:?}"))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("приложение не передало ANativeWindow")]
@@ -117,7 +142,15 @@ impl AndroidGraphicsBackend {
             return Err(Error::NoWindow);
         }
 
-        let display = unsafe { EGLDisplay::new(AndroidDisplay)? };
+        // На Android eglGetDisplay(EGL_DEFAULT_DISPLAY) надёжнее платформенного eglGetPlatformDisplayEXT:
+        // клиентские расширения системного EGL не всегда содержат EGL_KHR_platform_android
+        let display = match unsafe { default_display() } {
+            Ok(d) => d,
+            Err(e) => {
+                super::android_entry::alog(&format!("EGL: eglGetDisplay не подошёл ({e}), пробую платформу Android"));
+                unsafe { EGLDisplay::new(AndroidDisplay)? }
+            }
+        };
         let attrs = GlAttributes {
             version: (3, 0),
             profile: None,
