@@ -670,6 +670,7 @@ dependencies = [
 name = "cosmic-comp"
 version = "1.0.0"
 dependencies = [
+ "android-activity",
  "anyhow",
  "bitflags 2.13.2",
  "calloop",
@@ -4761,7 +4762,6 @@ checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/smithay/smithay.git?rev=8a27023#8a270232f1bfc416c781273c98a3f52a812a0bba"
 dependencies = [
  "aliasable",
  "appendlist",
@@ -4919,7 +4919,6 @@ dependencies = [
 [[package]]
 name = "softbuffer"
 version = "0.4.1"
-source = "git+https://github.com/pop-os/softbuffer?tag=cosmic-4.0#c2b2c19ddb38ff17495643699f97cb1f2064a1be"
 dependencies = [
  "as-raw-xcb-connection",
  "bytemuck",
@@ -5802,8 +5801,6 @@ dependencies = [
 [[package]]
 name = "wayland-cursor"
 version = "0.31.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a52d18780be9b1314328a3de5f930b73d2200112e3849ca6cb11822793fb34d"
 dependencies = [
  "rustix 1.1.6",
  "wayland-client",
