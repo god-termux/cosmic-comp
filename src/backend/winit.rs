@@ -209,6 +209,10 @@ pub fn init_backend(
                     if let Some(token) = token.take() {
                         event_loop_handle.remove(token);
                     }
+                    // Родительский Wayland-композитор закрыл соединение (или окно закрыто):
+                    // без бэкенда работать нечего, иначе цикл крутится вхолостую и пишет ошибки
+                    state.common.event_loop_signal.stop();
+                    state.common.event_loop_signal.wakeup();
                 }
             };
         })
