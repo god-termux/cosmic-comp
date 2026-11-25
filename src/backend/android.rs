@@ -204,6 +204,28 @@ pub fn init_backend(
         .map_err(|_| anyhow::anyhow!("Failed to init render timer for Android backend"))?;
     let _ = token;
 
+    // Ввод от приложения (JNI → cosmic_* → канал → process_input_event)
+    let (input_tx, input_rx) = smithay::reexports::calloop::channel::channel::<super::android_entry::RawInput>();
+    super::android_entry::register_sender(input_tx);
+    let size_now = backend.window_size();
+    event_loop
+        .handle()
+        .insert_source(input_rx, move |ev, _, state| {
+            use smithay::reexports::calloop::channel::Event;
+            if let Event::Msg(raw) = ev {
+                if matches!(raw, super::android_entry::RawInput::Quit) {
+                    state.common.should_stop = true;
+                    return;
+                }
+                let size = state.backend.winit().backend.window_size();
+                if let Some(event) = super::android_entry::to_input_event(raw, (size.w, size.h)) {
+                    state.process_input_event(event, crate::input::InputBackendId::Normal);
+                }
+            }
+        })
+        .map_err(|_| anyhow::anyhow!("Failed to init input channel for Android backend"))?;
+    let _ = size_now;
+
     state.backend = BackendData::Winit(WinitState {
         backend,
         output: output.clone(),
@@ -231,6 +253,8 @@ pub fn init_backend(
         }
         state.common.refresh();
     }
+
+    state.process_input_event(super::android_entry::device_added(), crate::input::InputBackendId::Normal);
 
     if state.common.with_xwayland {
         state.launch_xwayland(None);

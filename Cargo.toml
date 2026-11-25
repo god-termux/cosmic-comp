@@ -149,3 +149,6 @@ smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git", rev = "651
 # Android: winit тянет android-activity и требует выбрать реализацию; своя точка входа нам не нужна
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
+
+[lib]
+crate-type = ["rlib", "cdylib"]
