@@ -24,7 +24,11 @@ use smithay::{
     desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
-        calloop::{EventLoop, ping},
+        calloop::{
+            EventLoop,
+            timer::{TimeoutAction, Timer},
+            ping,
+        },
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::DisplayHandle,
         winit::event_loop::pump_events::PumpStatus,
@@ -32,7 +36,15 @@ use smithay::{
     utils::Transform,
     wayland::{dmabuf::DmabufFeedbackBuilder, presentation::Refresh},
 };
-use std::{borrow::BorrowMut, cell::RefCell, time::Duration};
+use std::{
+    borrow::BorrowMut,
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tracing::{error, info, warn};
 
 use super::render::{CursorMode, ScreenFilterStorage, init_shaders};
@@ -193,6 +205,7 @@ pub fn init_backend(
             .map_err(|_| anyhow::anyhow!("Failed to init eventloop timer for winit"))?,
     );
     let event_loop_handle = event_loop.handle();
+    let tick_pending = Arc::new(AtomicBool::new(false));
     event_loop
         .handle()
         .insert_source(event_source, move |_, _, state| {
@@ -200,8 +213,21 @@ pub fn init_backend(
                 .dispatch_new_events(|event| state.process_winit_event(event, &render_ping_handle))
             {
                 PumpStatus::Continue => {
-                    event_ping_handle.ping();
-                    render_ping_handle.ping();
+                    // Без vsync (вложенный запуск в god-termux) прямой ping даёт цикл без пауз:
+                    // рендер и swap гоняются на всю мощность. Ограничиваем частоту ~60 к/с.
+                    if !tick_pending.swap(true, Ordering::AcqRel) {
+                        let flag = tick_pending.clone();
+                        let (ev, rn) = (event_ping_handle.clone(), render_ping_handle.clone());
+                        let _ = event_loop_handle.insert_source(
+                            Timer::from_duration(Duration::from_millis(16)),
+                            move |_, _, _| {
+                                flag.store(false, Ordering::Release);
+                                ev.ping();
+                                rn.ping();
+                                TimeoutAction::Drop
+                            },
+                        );
+                    }
                 }
                 PumpStatus::Exit(_) => {
                     let output = state.backend.winit().output.clone();
