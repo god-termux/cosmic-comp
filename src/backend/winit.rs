@@ -61,7 +61,14 @@ pub struct WinitState {
 impl WinitState {
     #[profiling::function]
     pub fn render_output(&mut self, state: &mut Common) -> Result<()> {
-        let age = self.backend.buffer_age().unwrap_or(0);
+        // EGL-реализация вложенного запуска (Mesa swrast на Wayland) сообщает возраст буфера, но
+        // содержимое буферов не совпадает с ним: частичная перерисовка оставляет полосы старых пикселей.
+        // По умолчанию рисуем кадр целиком; COSMIC_WINIT_BUFFER_AGE=1 возвращает прежнее поведение.
+        let age = if crate::utils::env::bool_var("COSMIC_WINIT_BUFFER_AGE").unwrap_or(false) {
+            self.backend.buffer_age().unwrap_or(0)
+        } else {
+            0
+        };
         let (renderer, mut fb) = self
             .backend
             .bind()
