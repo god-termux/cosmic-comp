@@ -143,7 +143,7 @@ inherits = "release"
 lto = "fat"
 
 [patch.crates-io]
-smithay = { path = "/data/data/com.termux/files/home/smithay-patched" }
+smithay = { path = "../android-native/deps/smithay" }
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git", rev = "6511552" }
 
 # Android: winit тянет android-activity и требует выбрать реализацию; своя точка входа нам не нужна

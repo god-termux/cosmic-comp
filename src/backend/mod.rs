@@ -17,6 +17,8 @@ pub mod winit;
 #[cfg(target_os = "android")]
 pub mod android_gl;
 #[cfg(target_os = "android")]
+pub mod android_input;
+#[cfg(target_os = "android")]
 #[path = "android.rs"]
 pub mod winit;
 pub mod x11;
