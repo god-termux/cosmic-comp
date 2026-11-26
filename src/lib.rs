@@ -312,6 +312,11 @@ fn init_wayland_display(
     let source = ListeningSocketSource::new_auto().unwrap();
     let socket_name = source.socket_name().to_os_string();
     info!("Listening on {:?}", socket_name);
+    // Android: имя сокета для лаунчера god-cosmic (композитор живёт внутри приложения, процесса для поиска нет)
+    #[cfg(target_os = "android")]
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let _ = std::fs::write(std::path::Path::new(&dir).join("cosmic-socket"), socket_name.to_string_lossy().as_bytes());
+    }
 
     event_loop
         .handle()
