@@ -192,14 +192,25 @@ pub fn init_backend(
     // Вывод в ANativeWindow через EGL блокируется в swap_buffers на vsync (swap interval 1):
     // отдельный ping-цикл как в winit не нужен, рисуем по таймеру с запасом
     let tick = Duration::from_micros(1_000_000_000 / display_refresh_mhz() as u64);
+    // при постоянных ошибках отрисовки не долбим EGL и не засоряем лог: после 5 подряд — одна попытка в секунду
+    let mut failures: u32 = 0;
     let token = event_loop
         .handle()
         .insert_source(Timer::from_duration(tick), move |_, _, state| {
-            if let Err(err) = state.backend.winit().render_output(&mut state.common) {
-                error!(?err, "Failed to render frame.");
+            if super::android_gl::PAUSED.load(std::sync::atomic::Ordering::Acquire) {
+                return TimeoutAction::ToDuration(std::time::Duration::from_millis(100));
+            }
+            match state.backend.winit().render_output(&mut state.common) {
+                Ok(()) => failures = 0,
+                Err(err) => {
+                    failures = failures.saturating_add(1);
+                    if failures <= 3 || failures % 60 == 0 {
+                        error!(?err, failures, "Failed to render frame.");
+                    }
+                }
             }
             profiling::finish_frame!();
-            TimeoutAction::ToDuration(tick)
+            TimeoutAction::ToDuration(if failures > 5 { std::time::Duration::from_secs(1) } else { tick })
         })
         .map_err(|_| anyhow::anyhow!("Failed to init render timer for Android backend"))?;
     let _ = token;
@@ -215,6 +226,28 @@ pub fn init_backend(
             if let Event::Msg(raw) = ev {
                 if matches!(raw, super::android_entry::RawInput::Quit) {
                     state.common.should_stop = true;
+                    return;
+                }
+                if let super::android_entry::RawInput::NewWindow(w) = raw {
+                    state.android_new_window(w as *mut std::ffi::c_void);
+                    return;
+                }
+                if matches!(raw, super::android_entry::RawInput::Pause) {
+                    return;
+                }
+                if matches!(raw, super::android_entry::RawInput::Screenshot) {
+                    let path = super::android_entry::SHOT_PATH.lock().unwrap().take();
+                    if let Some(path) = path {
+                        let _ = state.backend.winit().render_output(&mut state.common);
+                        match state.backend.winit().backend.read_rgba() {
+                            Ok((w, h, rgba)) => {
+                                if let Err(e) = super::android_entry::write_ppm(&path, w, h, &rgba) {
+                                    super::android_entry::alog(&format!("screenshot: запись {path}: {e}"));
+                                }
+                            }
+                            Err(e) => super::android_entry::alog(&format!("screenshot: {e}")),
+                        }
+                    }
                     return;
                 }
                 let size = state.backend.winit().backend.window_size();
@@ -317,3 +350,28 @@ fn init_egl_client_side(
     Ok(())
 }
 
+
+impl State {
+    /// Новый ANativeWindow от приложения: пересоздаём EGL-поверхность и обновляем режим вывода под новый размер.
+    pub fn android_new_window(&mut self, window: *mut std::ffi::c_void) {
+        if let Err(e) = self.backend.winit().backend.replace_window(window) {
+            super::android_entry::alog(&format!("cosmic_set_window: {e}"));
+            return;
+        }
+        let size = self.backend.winit().backend.window_size();
+        let winit_state = self.backend.winit();
+        let output = &winit_state.output;
+        let mode = Mode { size, refresh: display_refresh_mhz() as i32 };
+        {
+            let mut config = output.user_data().get::<RefCell<OutputConfig>>().unwrap().borrow_mut();
+            config.mode.0 = size.into();
+        }
+        if let Some(cur) = output.current_mode() {
+            output.delete_mode(cur);
+        }
+        output.set_preferred(mode);
+        output.change_current_state(Some(mode), None, None, None);
+        smithay::desktop::layer_map_for_output(output).arrange();
+        self.common.output_configuration_state.update();
+    }
+}

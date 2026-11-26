@@ -672,6 +672,7 @@ dependencies = [
  "egui_plot",
  "futures-util",
  "glam 0.33.12",
+ "glow",
  "i18n-embed",
  "i18n-embed-fl",
  "iced_graphics",

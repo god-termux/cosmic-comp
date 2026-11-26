@@ -25,7 +25,7 @@ use std::{
     ffi::c_void,
     sync::{
         Arc,
-        atomic::{AtomicPtr, AtomicU32, Ordering},
+        atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -38,11 +38,25 @@ unsafe extern "C" {
 /// ANativeWindow, переданный приложением (nativeCosmicStart). Задаётся до запуска композитора.
 static WINDOW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static REFRESH_MHZ: AtomicU32 = AtomicU32::new(60_000);
+/// Окно потеряно (Surface уничтожен): рендер приостановлен до cosmic_set_window()
+pub static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Приложение передаёт окно и реальную частоту экрана.
 pub fn set_window(window: *mut c_void, refresh_mhz: u32) {
     WINDOW.store(window, Ordering::Release);
     REFRESH_MHZ.store(refresh_mhz.clamp(24_000, 360_000), Ordering::Release);
+}
+
+/// Безоконный режим (тесты): рендер в EGL pbuffer, размер w<<32|h. 0 — выключен.
+static HEADLESS: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_headless(w: u32, h: u32) {
+    HEADLESS.store(((w as u64) << 32) | h as u64, Ordering::Release);
+}
+
+fn headless_size() -> Option<(i32, i32)> {
+    let v = HEADLESS.load(Ordering::Acquire);
+    (v != 0).then(|| ((v >> 32) as i32, (v & 0xffff_ffff) as i32))
 }
 
 pub fn refresh_mhz() -> u32 {
@@ -87,8 +101,29 @@ unsafe impl EGLNativeSurface for AndroidSurface {
     }
 }
 
-/// eglGetDisplay(EGL_DEFAULT_DISPLAY) + eglInitialize + первая подходящая конфигурация окна GLES.
-unsafe fn default_display() -> Result<EGLDisplay, String> {
+struct PbufferSurface(i32, i32);
+
+unsafe impl EGLNativeSurface for PbufferSurface {
+    unsafe fn create(
+        &self,
+        display: &Arc<EGLDisplayHandle>,
+        config_id: ffi::egl::types::EGLConfig,
+    ) -> Result<*const c_void, smithay::backend::egl::EGLError> {
+        let attrs = [
+            ffi::egl::WIDTH as i32, self.0,
+            ffi::egl::HEIGHT as i32, self.1,
+            ffi::egl::NONE as i32,
+        ];
+        wrap_egl_call_ptr(|| unsafe { ffi::egl::CreatePbufferSurface(display.handle, config_id, attrs.as_ptr()) })
+    }
+
+    fn identifier(&self) -> Option<String> {
+        Some("Android/pbuffer".into())
+    }
+}
+
+/// eglGetDisplay(EGL_DEFAULT_DISPLAY) + eglInitialize + первая подходящая конфигурация окна (или pbuffer) GLES.
+unsafe fn default_display(pbuffer: bool) -> Result<EGLDisplay, String> {
     ffi::make_sure_egl_is_loaded().map_err(|e| format!("загрузка EGL: {e:?}"))?;
     let dpy = unsafe { ffi::egl::GetDisplay(std::ptr::null()) };
     if dpy.is_null() {
@@ -100,7 +135,7 @@ unsafe fn default_display() -> Result<EGLDisplay, String> {
     }
     unsafe { ffi::egl::BindAPI(ffi::egl::OPENGL_ES_API) };
     let attrs = [
-        ffi::egl::SURFACE_TYPE as i32, ffi::egl::WINDOW_BIT as i32,
+        ffi::egl::SURFACE_TYPE as i32, if pbuffer { ffi::egl::PBUFFER_BIT } else { ffi::egl::WINDOW_BIT } as i32,
         ffi::egl::RENDERABLE_TYPE as i32, ffi::egl::OPENGL_ES2_BIT as i32,
         ffi::egl::NONE as i32,
     ];
@@ -129,6 +164,9 @@ pub struct AndroidGraphicsBackend {
     _display: EGLDisplay,
     egl_surface: EGLSurface,
     window: *mut c_void,
+    headless: Option<(i32, i32)>,
+    pixel_format: smithay::backend::egl::display::PixelFormat,
+    config_id: ffi::egl::types::EGLConfig,
     damage_tracking: bool,
 }
 
@@ -138,13 +176,14 @@ unsafe impl Send for AndroidGraphicsBackend {}
 impl AndroidGraphicsBackend {
     pub fn new() -> Result<Self, Error> {
         let window = WINDOW.load(Ordering::Acquire);
-        if window.is_null() {
+        let headless = if window.is_null() { headless_size() } else { None };
+        if window.is_null() && headless.is_none() {
             return Err(Error::NoWindow);
         }
 
         // На Android eglGetDisplay(EGL_DEFAULT_DISPLAY) надёжнее платформенного eglGetPlatformDisplayEXT:
         // клиентские расширения системного EGL не всегда содержат EGL_KHR_platform_android
-        let display = match unsafe { default_display() } {
+        let display = match unsafe { default_display(headless.is_some()) } {
             Ok(d) => d,
             Err(e) => {
                 super::android_entry::alog(&format!("EGL: eglGetDisplay не подошёл ({e}), пробую платформу Android"));
@@ -157,15 +196,17 @@ impl AndroidGraphicsBackend {
             debug: false,
             vsync: true,
         };
-        let context = EGLContext::new_with_config(&display, attrs, PixelFormatRequirements::_10_bit())
-            .or_else(|_| EGLContext::new_with_config(&display, attrs, PixelFormatRequirements::_8_bit()))?;
+        // 8 бит первым: буфер SurfaceView 8-битный, а с 10-битной конфигурацией eglSwapBuffers даёт EGL_BAD_ALLOC
+        let context = EGLContext::new_with_config(&display, attrs, PixelFormatRequirements::_8_bit())
+            .or_else(|_| EGLContext::new_with_config(&display, attrs, PixelFormatRequirements::_10_bit()))?;
+        let pixel_format = context.pixel_format().unwrap();
+        let config_id = context.config_id();
         let surface = unsafe {
-            EGLSurface::new(
-                &display,
-                context.pixel_format().unwrap(),
-                context.config_id(),
-                AndroidSurface(window),
-            )
+            if let Some((w, h)) = headless {
+                EGLSurface::new(&display, context.pixel_format().unwrap(), context.config_id(), PbufferSurface(w, h))
+            } else {
+                EGLSurface::new(&display, context.pixel_format().unwrap(), context.config_id(), AndroidSurface(window))
+            }
             .map_err(EGLError::CreationFailed)?
         };
         let _ = context.unbind();
@@ -177,11 +218,17 @@ impl AndroidGraphicsBackend {
             _display: display,
             egl_surface: surface,
             window,
+            headless,
+            pixel_format,
+            config_id,
             damage_tracking,
         })
     }
 
     pub fn window_size(&self) -> Size<i32, Physical> {
+        if let Some((w, h)) = self.headless {
+            return (w, h).into();
+        }
         let (w, h) = unsafe { (ANativeWindow_getWidth(self.window), ANativeWindow_getHeight(self.window)) };
         (w, h).into()
     }
@@ -207,6 +254,7 @@ impl AndroidGraphicsBackend {
 
     pub fn submit(&mut self, damage: Option<&[Rectangle<i32, Physical>]>) -> Result<(), SwapBuffersError> {
         let size = self.window_size();
+        let damage = if self.headless.is_some() { None } else { damage };
         let mut damage = match damage {
             Some(damage) if self.damage_tracking && !damage.is_empty() => Some(
                 damage
@@ -219,6 +267,52 @@ impl AndroidGraphicsBackend {
             _ => None,
         };
         self.egl_surface.swap_buffers(damage.as_deref_mut())?;
+        Ok(())
+    }
+}
+
+impl AndroidGraphicsBackend {
+    /// Снимок текущего кадра (RGBA, строки сверху вниз). Для тестов: штатный ExportMem::copy_framebuffer.
+    pub fn read_rgba(&mut self) -> Result<(i32, i32, Vec<u8>), String> {
+        use smithay::backend::{
+            allocator::Fourcc,
+            renderer::{ExportMem, TextureMapping},
+        };
+        let size = self.window_size();
+        let (w, h) = (size.w, size.h);
+        let (renderer, fb) = self.bind().map_err(|e| format!("bind: {e:?}"))?;
+        let region = Rectangle::<i32, smithay::utils::Buffer>::new((0, 0).into(), (w, h).into());
+        let mapping = renderer
+            .copy_framebuffer(&fb, region, Fourcc::Abgr8888)
+            .map_err(|e| format!("copy_framebuffer: {e:?}"))?;
+        let flipped = mapping.flipped();
+        let data = renderer.map_texture(&mapping).map_err(|e| format!("map_texture: {e:?}"))?.to_vec();
+        drop(fb);
+        if !flipped {
+            return Ok((w, h, data));
+        }
+        let stride = (w * 4) as usize;
+        let mut out = vec![0u8; data.len()];
+        for y in 0..h as usize {
+            let src = (h as usize - 1 - y) * stride;
+            out[y * stride..(y + 1) * stride].copy_from_slice(&data[src..src + stride]);
+        }
+        Ok((w, h, out))
+    }
+}
+
+impl AndroidGraphicsBackend {
+    /// Приложение пересоздало Surface: новая EGL-поверхность на новом ANativeWindow, старая удаляется.
+    pub fn replace_window(&mut self, window: *mut c_void) -> Result<(), String> {
+        if self.headless.is_some() || window.is_null() {
+            return Err("replace_window: нет окна или безоконный режим".into());
+        }
+        let surface = unsafe {
+            EGLSurface::new(&self._display, self.pixel_format, self.config_id, AndroidSurface(window))
+                .map_err(|e| format!("EGLSurface::new: {e:?}"))?
+        };
+        self.egl_surface = surface;
+        self.window = window;
         Ok(())
     }
 }

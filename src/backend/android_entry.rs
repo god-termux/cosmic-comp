@@ -31,8 +31,8 @@ fn redirect_output() {
     let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else { return };
     let path = std::path::Path::new(&dir).join("cosmic-comp.log");
     let Ok(c) = CString::new(path.to_string_lossy().as_bytes()) else { return };
-    // O_WRONLY | O_CREAT | O_TRUNC (bionic: 1 | 0x40 | 0x200)
-    let fd = unsafe { open(c.as_ptr(), 1 | 0x40 | 0x200, 0o600u32) };
+    // O_WRONLY | O_CREAT | O_TRUNC | O_APPEND (bionic arm64: 1 | 0x40 | 0x200 | 0x400)
+    let fd = unsafe { open(c.as_ptr(), 1 | 0x40 | 0x200 | 0x400, 0o600u32) };
     if fd >= 0 {
         unsafe {
             dup2(fd, 1);
@@ -63,8 +63,14 @@ pub enum RawInput {
     Touch { kind: u32, id: u64, x: f64, y: f64 },
     Key { code: u32, pressed: bool },
     DeviceAdded,
+    Screenshot,
+    NewWindow(usize),
+    Pause,
     Quit,
 }
+
+/// Путь для cosmic_screenshot (тесты)
+pub static SHOT_PATH: Mutex<Option<String>> = Mutex::new(None);
 
 static SENDER: Mutex<Option<Sender<RawInput>>> = Mutex::new(None);
 
@@ -126,6 +132,7 @@ pub fn to_input_event(raw: RawInput, size: (i32, i32)) -> Option<InputEvent<Andr
             event: AndroidKeyboardInputEvent { time, key: code, count: 1, state: state_of(pressed) },
         },
         RawInput::DeviceAdded => device_added(),
+        RawInput::Screenshot | RawInput::NewWindow(_) | RawInput::Pause => return None,
         RawInput::Quit => return None,
     })
 }
@@ -156,6 +163,15 @@ pub extern "C" fn cosmic_start(window: *mut c_void, refresh_mhz: u32) -> i32 {
     }
     redirect_output();
     super::android_gl::set_window(window, refresh_mhz);
+    if window.is_null() {
+        // безоконный режим для тестов: COSMIC_HEADLESS=ШИРИНАxВЫСОТА (по умолчанию 2392x1080)
+        let (w, h) = std::env::var("COSMIC_HEADLESS")
+            .ok()
+            .and_then(|v| v.split_once('x').map(|(a, b)| (a.parse().ok(), b.parse().ok())))
+            .and_then(|(a, b)| Some((a?, b?)))
+            .unwrap_or((2392u32, 1080u32));
+        super::android_gl::set_headless(w, h);
+    }
     std::panic::set_hook(Box::new(|info| alog(&format!("panic: {info}"))));
     // Wayland-сокет композитора и конфиги берутся из окружения процесса приложения (XDG_RUNTIME_DIR и т.д.)
     // паника через границу extern "C" убила бы приложение
@@ -210,4 +226,48 @@ pub extern "C" fn cosmic_touch(kind: u32, id: u64, x: f64, y: f64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn cosmic_key(code: u32, pressed: bool) {
     send(RawInput::Key { code, pressed });
+}
+
+/// Тесты: сохранить кадр в PPM (P6). Выполняется в потоке композитора; файл появляется после следующего прохода цикла.
+#[unsafe(no_mangle)]
+pub extern "C" fn cosmic_screenshot(path: *const std::ffi::c_char) {
+    if path.is_null() {
+        return;
+    }
+    let p = unsafe { std::ffi::CStr::from_ptr(path) }.to_string_lossy().into_owned();
+    *SHOT_PATH.lock().unwrap() = Some(p);
+    send(RawInput::Screenshot);
+}
+
+/// Записывает RGBA-кадр как PPM
+pub fn write_ppm(path: &str, w: i32, h: i32, rgba: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = format!("{path}.tmp");
+    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    write!(f, "P6\n{w} {h}\n255\n")?;
+    let mut row = Vec::with_capacity((w * 3) as usize);
+    for y in 0..h as usize {
+        row.clear();
+        for px in rgba[y * (w * 4) as usize..(y + 1) * (w * 4) as usize].chunks_exact(4) {
+            row.extend_from_slice(&px[..3]);
+        }
+        f.write_all(&row)?;
+    }
+    f.flush()?;
+    drop(f);
+    std::fs::rename(tmp, path)
+}
+
+/// Surface пересоздан приложением (повторное открытие экрана, поворот): передать новый ANativeWindow.
+#[unsafe(no_mangle)]
+pub extern "C" fn cosmic_set_window(window: *mut c_void) {
+    super::android_gl::PAUSED.store(false, std::sync::atomic::Ordering::Release);
+    send(RawInput::NewWindow(window as usize));
+}
+
+/// Surface уничтожен: приостановить рендер, чтобы не писать в мёртвое окно.
+#[unsafe(no_mangle)]
+pub extern "C" fn cosmic_window_lost() {
+    super::android_gl::PAUSED.store(true, std::sync::atomic::Ordering::Release);
+    send(RawInput::Pause);
 }
