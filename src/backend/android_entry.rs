@@ -65,6 +65,7 @@ pub enum RawInput {
     DeviceAdded,
     Screenshot,
     NewWindow(usize),
+    Scale(f64),
     Pause,
     Quit,
 }
@@ -137,7 +138,7 @@ pub fn to_input_event(raw: RawInput, size: (i32, i32)) -> Option<InputEvent<Andr
             event: AndroidKeyboardInputEvent { time, key: code, count: 1, state: state_of(pressed) },
         },
         RawInput::DeviceAdded => device_added(),
-        RawInput::Screenshot | RawInput::NewWindow(_) | RawInput::Pause => return None,
+        RawInput::Screenshot | RawInput::NewWindow(_) | RawInput::Scale(_) | RawInput::Pause => return None,
         RawInput::Quit => return None,
     })
 }
@@ -280,4 +281,10 @@ pub extern "C" fn cosmic_window_lost() {
 /// Кадр касаний, который нужно отправить сразу после события Touch
 pub fn touch_frame() -> InputEvent<AndroidInput> {
     InputEvent::TouchFrame { event: AndroidTouchFrameEvent { time: InputTime::now() } }
+}
+
+/// Масштаб интерфейса на лету (число 0.5..4.0, например 1.5).
+#[unsafe(no_mangle)]
+pub extern "C" fn cosmic_set_scale(scale: f64) {
+    send(RawInput::Scale(scale));
 }

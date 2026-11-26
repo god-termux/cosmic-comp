@@ -248,6 +248,10 @@ pub fn init_backend(
                     state.android_new_window(w as *mut std::ffi::c_void);
                     return;
                 }
+                if let super::android_entry::RawInput::Scale(v) = raw {
+                    state.android_set_scale(v);
+                    return;
+                }
                 if matches!(raw, super::android_entry::RawInput::Pause) {
                     return;
                 }
@@ -390,6 +394,25 @@ impl State {
         }
         output.set_preferred(mode);
         output.change_current_state(Some(mode), None, None, None);
+        smithay::desktop::layer_map_for_output(output).arrange();
+        self.common.output_configuration_state.update();
+    }
+}
+
+impl State {
+    /// Смена масштаба интерфейса без перезапуска композитора.
+    pub fn android_set_scale(&mut self, value: f64) {
+        if !(0.5..=4.0).contains(&value) {
+            return;
+        }
+        let scale = if (value - value.round()).abs() < 0.01 { Scale::Integer(value.round() as i32) } else { Scale::Fractional(value) };
+        let winit_state = self.backend.winit();
+        let output = &winit_state.output;
+        {
+            let mut config = output.user_data().get::<RefCell<OutputConfig>>().unwrap().borrow_mut();
+            config.scale = scale.fractional_scale();
+        }
+        output.change_current_state(None, None, Some(scale), None);
         smithay::desktop::layer_map_for_output(output).arrange();
         self.common.output_configuration_state.update();
     }
