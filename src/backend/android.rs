@@ -146,6 +146,17 @@ impl WinitState {
     }
 }
 
+/// Масштаб интерфейса: COSMIC_SCALE (плотность экрана телефона; приложение/мод задаёт из DisplayMetrics.density).
+/// Целые значения идут как целый масштаб, остальные как дробный (wp_fractional_scale).
+fn android_scale() -> Scale {
+    let v: f64 = std::env::var("COSMIC_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|s: &f64| (0.5..=4.0).contains(s))
+        .unwrap_or(1.0);
+    if (v - v.round()).abs() < 0.01 { Scale::Integer(v.round() as i32) } else { Scale::Fractional(v) }
+}
+
 /// Частота экрана (мГц), заданная приложением; 60 Гц, если не задана.
 fn display_refresh_mhz() -> u32 {
     super::android_gl::refresh_mhz()
@@ -182,13 +193,14 @@ pub fn init_backend(
     output.change_current_state(
         Some(mode),
         Some(Transform::Flipped180),
-        Some(Scale::Integer(1)),
+        Some(android_scale()),
         Some((0, 0).into()),
     );
     output.user_data().insert_if_missing(|| {
         RefCell::new(OutputConfig {
             mode: ((size.w, size.h), None),
             transform: TransformDef::Flipped180,
+            scale: android_scale().fractional_scale(),
             ..Default::default()
         })
     });
