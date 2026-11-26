@@ -79,9 +79,12 @@ impl WinitState {
         ) {
             Ok(RenderOutputResult { damage, states, .. }) => {
                 std::mem::drop(fb);
-                self.backend
-                    .submit(damage.map(|x| x.as_slice()))
-                    .with_context(|| "Failed to submit buffer for display")?;
+                // кадр без повреждений не отправляем: лишний eglSwapBuffers каждые 16 мс грузит CPU/GPU впустую
+                if damage.is_some() {
+                    self.backend
+                        .submit(damage.map(|x| x.as_slice()))
+                        .with_context(|| "Failed to submit buffer for display")?;
+                }
                 state.send_frames(&self.output, None);
                 state.update_primary_output(&self.output, &states);
                 state.send_dmabuf_feedback(&self.output, &states, |_| None);
@@ -159,7 +162,8 @@ pub fn init_backend(
 
     init_egl_client_side(dh, state, &mut backend)?;
 
-    let name = "WINIT-0".to_string();
+    // экран телефона — встроенная DSI-панель: от имени зависит привязка касаний (Shell::builtin_output)
+    let name = "DSI-1".to_string();
     let size = backend.window_size();
     let props = PhysicalProperties {
         size: (0, 0).into(),
@@ -253,6 +257,9 @@ pub fn init_backend(
                 let size = state.backend.winit().backend.window_size();
                 if let Some(event) = super::android_entry::to_input_event(raw, (size.w, size.h)) {
                     state.process_input_event(event, crate::input::InputBackendId::Normal);
+                    if matches!(raw, super::android_entry::RawInput::Touch { .. }) {
+                        state.process_input_event(super::android_entry::touch_frame(), crate::input::InputBackendId::Normal);
+                    }
                 }
             }
         })

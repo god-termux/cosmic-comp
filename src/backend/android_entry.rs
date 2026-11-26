@@ -7,7 +7,7 @@
 use super::android_input::{
     AndroidInput, AndroidKeyboardInputEvent, AndroidMouseButton, AndroidMouseInputEvent,
     AndroidMouseMovedEvent, AndroidMouseWheelEvent, AndroidTouchCancelledEvent,
-    AndroidTouchEndedEvent, AndroidTouchMovedEvent, AndroidTouchStartedEvent, AndroidVirtualDevice,
+    AndroidTouchEndedEvent, AndroidTouchFrameEvent, AndroidTouchMovedEvent, AndroidTouchStartedEvent, AndroidVirtualDevice,
     ElementState, MouseScrollDelta, PhysicalPosition, RelativePosition,
 };
 use smithay::{
@@ -118,7 +118,11 @@ pub fn to_input_event(raw: RawInput, size: (i32, i32)) -> Option<InputEvent<Andr
         RawInput::Scroll { dy } => InputEvent::PointerAxis {
             event: AndroidMouseWheelEvent { time, delta: MouseScrollDelta::PixelDelta(pos(0.0, dy)) },
         },
-        RawInput::Touch { kind, id, x, y } => match kind {
+        // cosmic-comp применяет к касаниям обратную трансформацию вывода (у нас Flipped180 — зеркало по Y,
+        // нужное для рендера в EGL-поверхность), а к указателю нет: зеркалим Y заранее
+        RawInput::Touch { kind, id, x, y: y_raw } => {
+            let y = size.1 as f64 - y_raw;
+            match kind {
             0 => InputEvent::TouchDown {
                 event: AndroidTouchStartedEvent { time, position: rel(x, y), global_position: pos(x, y), id },
             },
@@ -127,7 +131,8 @@ pub fn to_input_event(raw: RawInput, size: (i32, i32)) -> Option<InputEvent<Andr
             },
             2 => InputEvent::TouchUp { event: AndroidTouchEndedEvent { time, id } },
             _ => InputEvent::TouchCancel { event: AndroidTouchCancelledEvent { time, id } },
-        },
+            }
+        }
         RawInput::Key { code, pressed } => InputEvent::Keyboard {
             event: AndroidKeyboardInputEvent { time, key: code, count: 1, state: state_of(pressed) },
         },
@@ -270,4 +275,9 @@ pub extern "C" fn cosmic_set_window(window: *mut c_void) {
 pub extern "C" fn cosmic_window_lost() {
     super::android_gl::PAUSED.store(true, std::sync::atomic::Ordering::Release);
     send(RawInput::Pause);
+}
+
+/// Кадр касаний, который нужно отправить сразу после события Touch
+pub fn touch_frame() -> InputEvent<AndroidInput> {
+    InputEvent::TouchFrame { event: AndroidTouchFrameEvent { time: InputTime::now() } }
 }

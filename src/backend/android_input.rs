@@ -31,7 +31,7 @@ use smithay::backend::input::{
     self, AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, ButtonState, Device,
     DeviceCapability, Event, InputBackend, InputTime, KeyState,
     KeyboardKeyEvent, Keycode, PointerAxisEvent, PointerButtonEvent, PointerMotionAbsoluteEvent,
-    TouchCancelEvent, TouchDownEvent, TouchEvent, TouchMotionEvent, TouchSlot, TouchUpEvent, UnusedEvent,
+    TouchCancelEvent, TouchDownEvent, TouchEvent, TouchFrameEvent, TouchMotionEvent, TouchSlot, TouchUpEvent, UnusedEvent,
 };
 
 /// Marker used to define the `InputBackend` types for the android backend.
@@ -421,7 +421,7 @@ impl InputBackend for AndroidInput {
     type TouchUpEvent = AndroidTouchEndedEvent;
     type TouchMotionEvent = AndroidTouchMovedEvent;
     type TouchCancelEvent = AndroidTouchCancelledEvent;
-    type TouchFrameEvent = UnusedEvent;
+    type TouchFrameEvent = AndroidTouchFrameEvent;
     type TabletToolAxisEvent = UnusedEvent;
     type TabletToolProximityEvent = UnusedEvent;
     type TabletToolTipEvent = UnusedEvent;
@@ -431,3 +431,21 @@ impl InputBackend for AndroidInput {
 
     type SpecialEvent = UnusedEvent;
 }
+
+/// Конец группы касаний (wl_touch.frame): клиенты (iced/sctk) обрабатывают касания только по кадру
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AndroidTouchFrameEvent {
+    pub time: InputTime,
+}
+
+impl Event<AndroidInput> for AndroidTouchFrameEvent {
+    fn time(&self) -> InputTime {
+        self.time
+    }
+
+    fn device(&self) -> AndroidVirtualDevice {
+        AndroidVirtualDevice
+    }
+}
+
+impl TouchFrameEvent<AndroidInput> for AndroidTouchFrameEvent {}

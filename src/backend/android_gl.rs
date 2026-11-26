@@ -245,6 +245,10 @@ impl AndroidGraphicsBackend {
     }
 
     pub fn buffer_age(&self) -> Option<usize> {
+        // pbuffer одинарный и сохраняет содержимое между кадрами: возраст всегда 1
+        if self.headless.is_some() {
+            return Some(1);
+        }
         if self.damage_tracking {
             self.egl_surface.buffer_age().map(|x| x as usize)
         } else {
