@@ -311,6 +311,11 @@ impl AndroidGraphicsBackend {
         if self.headless.is_some() || window.is_null() {
             return Err("replace_window: нет окна или безоконный режим".into());
         }
+        // то же окно с новым размером (поворот экрана): поверхность EGL подхватывает размер сама, пересоздавать нельзя —
+        // eglCreateWindowSurface на уже подключённом ANativeWindow вернёт ошибку
+        if window == self.window {
+            return Ok(());
+        }
         let surface = unsafe {
             EGLSurface::new(&self._display, self.pixel_format, self.config_id, AndroidSurface(window))
                 .map_err(|e| format!("EGLSurface::new: {e:?}"))?
